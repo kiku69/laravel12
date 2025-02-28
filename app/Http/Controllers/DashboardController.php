@@ -9,26 +9,83 @@ use Inertia\Inertia;
 
 class DashboardController extends Controller
 {
-    /**
-     * Handle the incoming request.
-     */
-    public function __invoke(Request $request)
+    public function index(Request $request)
     {
-        $city = $request->input('city', 'Kuressaare');
+        // Cachi andmed 12 tunniks, et vältida liigseid päringuid
+        $agricultureData = Cache::remember('agriculture_data', now()->addHours(12), function () {
+            return $this->fetchAgricultureData();
+        });
 
         return Inertia::render('Dashboard', [
-            'weather' => Cache::remember("weather-$city", now()->addHour(), fn () => $this->getWeatherData($city))
+            'agricultureData' => $agricultureData
         ]);
     }
 
-    private function getWeatherData(string $city)
+    private function fetchAgricultureData()
     {
-        $response = Http::get('https://api.openweathermap.org/data/2.5/weather', [
-            'q' => $city,
-            'units' => 'metric',
-            'appid' => config('services.open_weather_map.open_weather_map_key'),
-        ]);
+        // Statistikaameti API URL
+        $apiUrl = 'https://andmed.stat.ee/api/v1/et/stat/PM59';
 
-        return $response->json();
+        // JSON-päringu keha
+        $payload = [
+            "query" => [
+                [
+                    "code" => "Maakond",
+                    "selection" => [
+                        "filter" => "item",
+                        "values" => ["1", "37", "39", "44", "49", "51", "57", "59", "65", "67", "70", "74", "78", "82", "84", "86"]
+                    ]
+                ],
+                [
+                    "code" => "Põllumajandusmaa liik",
+                    "selection" => [
+                        "filter" => "item",
+                        "values" => ["1", "2", "3"]
+                    ]
+                ]
+            ],
+            "response" => ["format" => "json-stat2"]
+        ];
+
+        // Saada POST-päring
+        $response = Http::post($apiUrl, $payload);
+
+        // Kontrolli, kas API vastus õnnestus
+        if ($response->failed()) {
+            return [];
+        }
+
+        $data = $response->json();
+
+        // Töötle andmed (lihtsustame struktuuri)
+        return $this->processAgricultureData($data);
+    }
+
+    private function processAgricultureData($data)
+    {
+        // Kontrolli, kas andmed on saadud
+        if (!isset($data['value']) || !isset($data['dimension']['Maakond']['category']['label'])) {
+            return [];
+        }
+
+        $regions = $data['dimension']['Maakond']['category']['label'];
+        $landTypes = $data['dimension']['Põllumajandusmaa liik']['category']['label'];
+        $values = $data['value'];
+
+        $processedData = [];
+        $index = 0;
+
+        foreach ($regions as $regionKey => $regionName) {
+            foreach ($landTypes as $landTypeKey => $landTypeName) {
+                $processedData[] = [
+                    'region' => $regionName,
+                    'land_type' => $landTypeName,
+                    'value' => $values[$index] ?? 0
+                ];
+                $index++;
+            }
+        }
+
+        return $processedData;
     }
 }
